@@ -8,8 +8,10 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 COPY start.sh /start.sh
+COPY autoforward.sh /usr/local/bin/autoforward.sh
 # strip potential CRLF (in case git autocrlf on Windows) + make executable
-RUN sed -i 's/\r$//' /start.sh && chmod +x /start.sh
+RUN sed -i 's/\r$//' /start.sh /usr/local/bin/autoforward.sh \
+ && chmod +x /start.sh /usr/local/bin/autoforward.sh
 
 # NPM ports
 EXPOSE 80 81 443

@@ -32,32 +32,8 @@ echo "[start] tailscale up as ${TS_HOSTNAME}"
 
 /usr/bin/tailscale --socket=/tmp/tailscaled.sock status || true
 
-# ---------------------------------------------------------------------------
-# Bridge tailnet targets to local ports via tailscaled's SOCKS5 proxy.
-#
-# Because tailscaled runs in userspace-networking mode, other processes
-# (nginx / NPM) cannot reach 100.x.x.x directly. socat listens on a local
-# port and forwards each connection through SOCKS5 to the tailnet target.
-#
-# Configure via env var TS_FORWARDS, semicolon-separated:
-#   TS_FORWARDS="18581:100.64.1.5:8581;15000:100.64.1.5:5000"
-#
-# Then in NPM use 127.0.0.1:<local-port> as the Forward Hostname/Port.
-# ---------------------------------------------------------------------------
-if [ -n "${TS_FORWARDS}" ]; then
-  IFS=';' read -ra RULES <<< "${TS_FORWARDS}"
-  for rule in "${RULES[@]}"; do
-    rule="$(echo "$rule" | xargs)"   # trim
-    [ -z "$rule" ] && continue
-    local_port="${rule%%:*}"
-    rest="${rule#*:}"
-    remote_host="${rest%%:*}"
-    remote_port="${rest##*:}"
-    echo "[start] socat bridge 127.0.0.1:${local_port} -> ${remote_host}:${remote_port} (via SOCKS5)"
-    socat TCP-LISTEN:${local_port},fork,reuseaddr,bind=127.0.0.1 \
-          SOCKS4A:localhost:${remote_host}:${remote_port},socksport=${TS_SOCKS_PORT} &
-  done
-fi
+echo "[start] launching autoforward watcher"
+/usr/local/bin/autoforward.sh &
 
 trap "kill -TERM ${TS_PID} 2>/dev/null || true" TERM INT
 
