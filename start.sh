@@ -45,9 +45,9 @@ if [ -n "${TS_FORWARDS:-}" ]; then
     rest="${rule#*:}"
     rh="${rest%:*}"
     rp="${rest##*:}"
-    echo "[start] manual socat 127.0.0.1:${lp} -> ${rh}:${rp} (via SOCKS5)"
+    echo "[start] manual socat 127.0.0.1:${lp} -> ${rh}:${rp} (via HTTP CONNECT)"
     socat TCP-LISTEN:${lp},fork,reuseaddr,bind=127.0.0.1 \
-          SOCKS4A:localhost:${rh}:${rp},socksport=${TS_SOCKS_PORT} \
+          PROXY:localhost:${rh}:${rp},proxyport=${TS_SOCKS_PORT} \
           >/dev/null 2>&1 &
   done
 fi

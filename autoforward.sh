@@ -52,9 +52,9 @@ ensure_socat() {
     fi
   fi
 
-  log "start socat 127.0.0.1:${lport} -> ${host}:${rport} (via SOCKS5)"
+  log "start socat 127.0.0.1:${lport} -> ${host}:${rport} (via HTTP CONNECT)"
   socat TCP-LISTEN:${lport},fork,reuseaddr,bind=127.0.0.1 \
-        SOCKS4A:localhost:${host}:${rport},socksport=${SOCKS_PORT} \
+        PROXY:localhost:${host}:${rport},proxyport=${SOCKS_PORT} \
         >/dev/null 2>&1 &
   local pid=$!
   # Replace any existing line for this key
