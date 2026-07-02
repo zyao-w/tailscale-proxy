@@ -102,10 +102,31 @@ process_configs() {
   for conf in "${CONF_DIR}"/*.conf; do
     [ -f "${conf}" ] || continue
 
-    # Extract tailnet targets. NPM's confs use `set $server "…";` and `set $port …;`
-    # or a direct `proxy_pass http://host:port;`. Handle both.
-    #
-    # Pattern 1: set $server "100.x.x.x"; ... set $port 8581;
+    # ---- Case A: this conf already carries our marker from a previous run ----
+    # marker line looks like: "# tailnet-target: 100.64.1.5:8581 -> 127.0.0.1:20000"
+    local marker_line orig_key
+    marker_line=$(grep -m1 -oE '^# tailnet-target: [^ ]+ -> 127\.0\.0\.1:[0-9]+' "${conf}" || true)
+    if [ -n "${marker_line}" ]; then
+      orig_key=$(echo "${marker_line}" | awk '{print $3}')
+      local lport
+      lport=$(alloc_port "${orig_key}")
+      ensure_socat "${orig_key}" "${lport}"
+      active_keys="${active_keys}${orig_key}"$'\n'
+
+      # If NPM regenerated this conf (unlikely — usually only edited hosts get
+      # regenerated), the marker would be gone. But if the marker is still here
+      # yet $server/$port don't match, sync them back.
+      if ! grep -qE "set\s+\$server\s+\"127\.0\.0\.1\"" "${conf}" \
+         || ! grep -qE "set\s+\$port\s+${lport}\b" "${conf}"; then
+        sed -i -E "s#(set\s+\\\$server\s+)\"[^\"]+\"#\\1\"127.0.0.1\"#" "${conf}"
+        sed -i -E "s#(set\s+\\\$port\s+)[0-9]+#\\1${lport}#" "${conf}"
+        changed_any=1
+        log "resynced ${conf##*/} → 127.0.0.1:${lport} (tailnet ${orig_key})"
+      fi
+      continue
+    fi
+
+    # ---- Case B: fresh conf, try Pattern 1 (set $server / set $port) ----
     local server port
     server=$(grep -oE 'set\s+\$server\s+"[^"]+"' "${conf}" | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
     port=$(grep -oE 'set\s+\$port\s+[0-9]+' "${conf}" | head -1 | awk '{print $NF}')
@@ -118,25 +139,17 @@ process_configs() {
         ensure_socat "${key}" "${lport}"
         active_keys="${active_keys}${key}"$'\n'
 
-        # Rewrite conf: point $server/$port to loopback
-        if ! grep -qE "set\s+\$server\s+\"127\.0\.0\.1\"" "${conf}" \
-           || ! grep -qE "set\s+\$port\s+${lport}\b" "${conf}"; then
-          sed -i -E "s#(set\s+\\\$server\s+)\"[^\"]+\"#\\1\"127.0.0.1\"#" "${conf}"
-          sed -i -E "s#(set\s+\\\$port\s+)[0-9]+#\\1${lport}#" "${conf}"
-          # Preserve original target as a comment marker for humans
-          if ! grep -q "# tailnet-target: ${key}" "${conf}"; then
-            sed -i "1i # tailnet-target: ${key} -> 127.0.0.1:${lport}" "${conf}"
-          else
-            sed -i -E "s|^# tailnet-target: .*|# tailnet-target: ${key} -> 127.0.0.1:${lport}|" "${conf}"
-          fi
-          changed_any=1
-          log "rewrote ${conf##*/} → 127.0.0.1:${lport} (tailnet ${key})"
-        fi
+        sed -i -E "s#(set\s+\\\$server\s+)\"[^\"]+\"#\\1\"127.0.0.1\"#" "${conf}"
+        sed -i -E "s#(set\s+\\\$port\s+)[0-9]+#\\1${lport}#" "${conf}"
+        sed -i "1i # tailnet-target: ${key} -> 127.0.0.1:${lport}" "${conf}"
+        changed_any=1
+        log "rewrote ${conf##*/} → 127.0.0.1:${lport} (tailnet ${key})"
         continue
       fi
     fi
 
-    # Pattern 2: direct proxy_pass http://host:port
+    # ---- Case C: Pattern 2 (direct proxy_pass http://host:port) ----
+    local matched_any=0
     while IFS= read -r target; do
       [ -z "${target}" ] && continue
       local host="${target%:*}"
@@ -149,8 +162,9 @@ process_configs() {
         active_keys="${active_keys}${key}"$'\n'
 
         sed -i -E "s#(proxy_pass\s+https?://)${host}:${rport}#\\1127.0.0.1:${lport}#g" "${conf}"
-        if ! grep -q "# tailnet-target: ${key}" "${conf}"; then
+        if [ "${matched_any}" = "0" ]; then
           sed -i "1i # tailnet-target: ${key} -> 127.0.0.1:${lport}" "${conf}"
+          matched_any=1
         fi
         changed_any=1
         log "rewrote ${conf##*/} proxy_pass → 127.0.0.1:${lport} (tailnet ${key})"
