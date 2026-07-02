@@ -8,9 +8,11 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 COPY start.sh /start.sh
-RUN chmod +x /start.sh
+# strip potential CRLF (in case git autocrlf on Windows) + make executable
+RUN sed -i 's/\r$//' /start.sh && chmod +x /start.sh
 
 # NPM ports
 EXPOSE 80 81 443
 
-CMD ["/start.sh"]
+# Override NPM's s6 entrypoint; start.sh will exec /init at the end
+ENTRYPOINT ["/start.sh"]
