@@ -32,6 +32,26 @@ echo "[start] tailscale up as ${TS_HOSTNAME}"
 
 /usr/bin/tailscale --socket=/tmp/tailscaled.sock status || true
 
+# ---------------------------------------------------------------------------
+# Manual bootstrap forwards via TS_FORWARDS (optional, for testing/fallback)
+#   TS_FORWARDS="18581:100.64.1.5:8581;15000:100.64.1.5:5000"
+# ---------------------------------------------------------------------------
+if [ -n "${TS_FORWARDS:-}" ]; then
+  IFS=';' read -ra RULES <<< "${TS_FORWARDS}"
+  for rule in "${RULES[@]}"; do
+    rule="$(echo "$rule" | xargs)"
+    [ -z "$rule" ] && continue
+    lp="${rule%%:*}"
+    rest="${rule#*:}"
+    rh="${rest%:*}"
+    rp="${rest##*:}"
+    echo "[start] manual socat 127.0.0.1:${lp} -> ${rh}:${rp} (via SOCKS5)"
+    socat TCP-LISTEN:${lp},fork,reuseaddr,bind=127.0.0.1 \
+          SOCKS4A:localhost:${rh}:${rp},socksport=${TS_SOCKS_PORT} \
+          >/dev/null 2>&1 &
+  done
+fi
+
 echo "[start] launching autoforward watcher"
 /usr/local/bin/autoforward.sh &
 
