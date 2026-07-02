@@ -31,8 +31,6 @@ npm-tailscale/
 ├── Dockerfile          # NPM base + tailscale + socat + autoforward
 ├── start.sh            # 起 tailscaled → tailscale up → 起 autoforward → exec /init
 ├── autoforward.sh      # 監看 NPM conf,自動建立/清理 tailnet socat forward
-├── .gitattributes      # 強制 shell script 用 LF 換行
-├── .gitignore
 └── README.md
 ```
 
@@ -46,7 +44,6 @@ Tailscale admin → **Settings → Keys → Generate auth key**
 
 - ✅ **Reusable**
 - ❌ **Ephemeral**(一定要取消,不然節點下線會被刪)
-- 建議加 tag(例如 `tag:zeabur`),之後 ACL 好寫
 
 ### 2. Push 到你自己的 GitHub repo
 
@@ -64,12 +61,12 @@ Tailscale admin → **Settings → Keys → Generate auth key**
 
 ### 4. 設定環境變數
 
-| 變數 | 必填 | 說明 |
-|---|---|---|
-| `TS_AUTHKEY` | ✅ | 上面產生的 key,建議用 Zeabur secret 存 |
-| `TS_HOSTNAME` |  | 節點在 tailnet 顯示的名字,預設 `zeabur-npm` |
-| `TS_ACCEPT_DNS` |  | `true` 才能用 MagicDNS 名稱,預設 `false` |
-| `TS_SOCKS_PORT` |  | tailscaled SOCKS5 監聽 port,預設 `1055` |
+| 變數            | 必填 | 說明                                        |
+| --------------- | ---- | ------------------------------------------- |
+| `TS_AUTHKEY`    | ✅   | 上面產生的 key,建議用 Zeabur secret 存      |
+| `TS_HOSTNAME`   |      | 節點在 tailnet 顯示的名字,預設 `zeabur-npm` |
+| `TS_ACCEPT_DNS` |      | `true` 才能用 MagicDNS 名稱,預設 `false`    |
+| `TS_SOCKS_PORT` |      | tailscaled SOCKS5 監聽 port,預設 `1055`     |
 
 > **不需要** `TS_FORWARDS` 這種手動對照表 —— 在 NPM UI 新增 Proxy Host 時直接填 tailnet IP + port,背景會自動偵測並建立轉發。
 
@@ -78,6 +75,7 @@ Tailscale admin → **Settings → Keys → Generate auth key**
 第一次登入 `http://<zeabur-domain>:81`(預設 `admin@example.com` / `changeme`,強制改密碼)。
 
 New Proxy Host:
+
 - **Domain Names**:`homebridge.yourdomain.com`
 - **Scheme**:`http`
 - **Forward Hostname / IP**:直接填 tailnet IP,例如 `100.64.1.5`(或 `nas.你的-tailnet.ts.net`,需要設 `TS_ACCEPT_DNS=true`)
@@ -126,16 +124,15 @@ curl -v http://127.0.0.1:27183
 
 ## 疑難排解
 
-| 症狀 | 原因 / 解法 |
-|---|---|
-| `/start.sh: not found` | Windows 的 CRLF 換行。已用 `.gitattributes` + Dockerfile `sed` 雙保險,若仍發生請確認 git clone 後檔案是 LF |
-| Tailscale admin 一直冒新節點 | `/var/lib/tailscale` volume 沒掛,state 沒持久化 |
-| NPM 502 Bad Gateway | 進 container 跑上面「驗證步驟 4」,不通就往前推 |
-| 步驟 2 通但 3 不通 | Tailscale ACL 沒放行,或 NAS 上服務只綁 `127.0.0.1` / LAN 介面 |
-| 步驟 3 通但 5 不通 | autoforward 沒偵測到 conf,看容器 log `[autoforward]` 訊息;確認 NPM 的 Forward Hostname 是 `100.x` 開頭或 `.ts.net` 結尾 |
-| NPM UI 顯示的 hostname 被改掉 | 不會 —— autoforward 只改 `/data/nginx/proxy_host/*.conf`,不動 NPM 資料庫,UI 仍顯示你原本填的 tailnet IP |
-| 節點過陣子自動消失 | authkey 是 ephemeral,重產一把非 ephemeral 的 |
-| 想用 MagicDNS 名稱 | 設 `TS_ACCEPT_DNS=true`,NPM 內直接填 `nas.你的-tailnet.ts.net` |
+| 症狀                          | 原因 / 解法                                                                                                             |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| Tailscale admin 一直冒新節點  | `/var/lib/tailscale` volume 沒掛,state 沒持久化                                                                         |
+| NPM 502 Bad Gateway           | 進 container 跑上面「驗證步驟 4」,不通就往前推                                                                          |
+| 步驟 2 通但 3 不通            | Tailscale ACL 沒放行,或 NAS 上服務只綁 `127.0.0.1` / LAN 介面                                                           |
+| 步驟 3 通但 5 不通            | autoforward 沒偵測到 conf,看容器 log `[autoforward]` 訊息;確認 NPM 的 Forward Hostname 是 `100.x` 開頭或 `.ts.net` 結尾 |
+| NPM UI 顯示的 hostname 被改掉 | 不會 —— autoforward 只改 `/data/nginx/proxy_host/*.conf`,不動 NPM 資料庫,UI 仍顯示你原本填的 tailnet IP                 |
+| 節點過陣子自動消失            | authkey 是 ephemeral,重產一把非 ephemeral 的                                                                            |
+| 想用 MagicDNS 名稱            | 設 `TS_ACCEPT_DNS=true`,NPM 內直接填 `nas.你的-tailnet.ts.net`                                                          |
 
 ---
 
