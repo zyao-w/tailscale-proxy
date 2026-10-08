@@ -2,7 +2,7 @@
 set -e
 
 : "${TS_AUTHKEY:?TS_AUTHKEY is required}"
-: "${TS_HOSTNAME:=zeabur-npm}"
+: "${TS_HOSTNAME:=npm-tailscale}"
 : "${TS_STATE_DIR:=/var/lib/tailscale}"
 : "${TS_ACCEPT_DNS:=false}"
 : "${TS_SOCKS_PORT:=1055}"
