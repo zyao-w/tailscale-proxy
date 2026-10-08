@@ -1,150 +1,220 @@
 # npm-tailscale
 
-在 **Zeabur** 上把 **Nginx Proxy Manager (NPM)** 和 **Tailscale** 打包成單一 container,讓 NPM 可以反向代理到 tailnet 上的服務(例如家裡的 NAS、Homebridge、Home Assistant)。
+**English** | [繁體中文](README.zh-TW.md)
+
+Bundle **Nginx Proxy Manager (NPM)** and **Tailscale** into a single Docker container, so NPM can reverse-proxy services on your tailnet (e.g. a home NAS, Homebridge, Home Assistant).
 
 ```
-公網 ──► Zeabur Gateway ──► NPM ──► (autoforward + socat) ──► tailscaled (SOCKS5) ──► 家中 NAS
-                                                              (userspace networking)
+Internet ──► NPM ──► (autoforward + socat) ──► tailscaled (SOCKS5) ──► service on your tailnet
+                                              (userspace networking)
 ```
 
-**使用體驗:在 NPM UI 直接填 tailnet IP,存檔即通,零手動設定。**
+**Experience: type a tailnet IP directly in the NPM UI, save, and it just works. No manual forwarding config.**
+
+## Tested environment
+
+| Component           | Version      |
+| ------------------- | ------------ |
+| OS                  | Ubuntu 24.04 |
+| Deployment          | Docker       |
+| Tailscale           | 1.102.4      |
+| Nginx Proxy Manager | 2.15.1       |
+
+The image is built `FROM jc21/nginx-proxy-manager:latest`, so a newer build may pull different versions. Pin the base image tag in the `Dockerfile` if you need reproducible builds.
 
 ---
 
-## 為什麼要這樣做
+## Why this exists
 
-Zeabur 的 container 沒有 `NET_ADMIN` capability 也沒有 `/dev/net/tun`,所以 tailscale **只能跑 userspace networking 模式**。這帶來兩個限制:
+Running Tailscale in **userspace networking** mode (no `NET_ADMIN` capability, no `/dev/net/tun`) is the simplest way to run it inside a container, and the only option on many container platforms. It has two consequences:
 
-1. tailscaled 不會在系統加 `100.64.0.0/10` 的路由,任何行程直接 `curl 100.x.x.x` 都會失敗。
-2. 進 tailnet 的唯一出口是 tailscaled 內建的 **SOCKS5 / HTTP CONNECT proxy**。
+1. `tailscaled` does not add a `100.64.0.0/10` route to the system, so a plain `curl 100.x.x.x` from any process fails.
+2. The only way into the tailnet is the built-in **SOCKS5 / HTTP CONNECT proxy** of `tailscaled`.
 
-而 nginx 的 `proxy_pass` 不支援 upstream 走 SOCKS5 / HTTP proxy,所以中間必須有一個 bridge。這個 repo 用 **socat** 把 tailnet 的目標橋接成 `127.0.0.1` 上的本地 port,NPM 只要當作一般本機服務去代理就好。
+nginx `proxy_pass` cannot use a SOCKS5 / HTTP proxy for its upstream, so a bridge is needed. This repo uses **socat** to bridge each tailnet target to a local port on `127.0.0.1`, and NPM simply proxies to it as an ordinary local service.
 
-> 用兩個 Zeabur service(tailscale + NPM 分開)是行不通的,因為兩個 container 不共用 network namespace,socat / proxy 都幫不上忙。
+> Tailscale and NPM must live in the same container (same network namespace). Running them as two separate containers does not work with this approach.
 
 ---
 
-## 檔案結構
+## Files
 
 ```
 npm-tailscale/
 ├── Dockerfile          # NPM base + tailscale + socat + autoforward
-├── start.sh            # 起 tailscaled → tailscale up → 起 autoforward → exec /init
-├── autoforward.sh      # 監看 NPM conf,自動建立/清理 tailnet socat forward
-└── README.md
+├── start.sh            # start tailscaled → tailscale up → start autoforward → exec /init
+├── autoforward.sh      # watch NPM confs, auto create/clean up tailnet socat forwards
+├── LICENSE
+├── README.md           # English
+└── README.zh-TW.md     # 繁體中文
 ```
 
 ---
 
-## 部署步驟
+## Deploy with Docker
 
-### 1. 產生 Tailscale auth key
+### 1. Generate a Tailscale auth key
 
 Tailscale admin → **Settings → Keys → Generate auth key**
 
 - ✅ **Reusable**
-- ❌ **Ephemeral**(一定要取消,不然節點下線會被刪)
+- ❌ **Ephemeral** (must be off, otherwise the node is deleted when it goes offline)
 
-### 2. Push 到你自己的 GitHub repo
+### 2. Build the image
 
-### 3. 在 Zeabur 建立 service
+```sh
+git clone <your-repo-url> npm-tailscale
+cd npm-tailscale
+docker build -t npm-tailscale .
+```
 
-- **Deploy from GitHub**,選這個 repo
-- 加 volumes(缺一不可):
-  | Mount path | 用途 |
-  |---|---|
-  | `/data` | NPM 設定 |
-  | `/etc/letsencrypt` | Let's Encrypt 憑證 |
-  | `/var/lib/tailscale` | **tailscale state,沒掛會不斷重登** |
-- 開 ports:`80`(HTTP)、`81`(NPM 後台)、`443`(HTTPS)
-- 綁 domain 到 `80` / `443`
+### 3. Run the container
 
-### 4. 設定環境變數
+```sh
+docker run -d --name npm-tailscale \
+  --restart unless-stopped \
+  -p 80:80 -p 81:81 -p 443:443 \
+  -e TS_AUTHKEY=tskey-auth-xxxxxxxx \
+  -e TS_HOSTNAME=npm-tailscale \
+  -v $(pwd)/data:/data \
+  -v $(pwd)/letsencrypt:/etc/letsencrypt \
+  -v $(pwd)/tailscale:/var/lib/tailscale \
+  npm-tailscale
+```
 
-| 變數            | 必填 | 說明                                        |
-| --------------- | ---- | ------------------------------------------- |
-| `TS_AUTHKEY`    | ✅   | 上面產生的 key,建議用 Zeabur secret 存      |
-| `TS_HOSTNAME`   |      | 節點在 tailnet 顯示的名字,預設 `zeabur-npm` |
-| `TS_ACCEPT_DNS` |      | `true` 才能用 MagicDNS 名稱,預設 `false`    |
-| `TS_SOCKS_PORT` |      | tailscaled SOCKS5 監聽 port,預設 `1055`     |
+Or with Docker Compose:
 
-> **不需要** `TS_FORWARDS` 這種手動對照表 —— 在 NPM UI 新增 Proxy Host 時直接填 tailnet IP + port,背景會自動偵測並建立轉發。
+```yaml
+services:
+  npm-tailscale:
+    build: .
+    container_name: npm-tailscale
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "81:81"
+      - "443:443"
+    environment:
+      TS_AUTHKEY: ${TS_AUTHKEY}
+      TS_HOSTNAME: npm-tailscale
+    volumes:
+      - ./data:/data
+      - ./letsencrypt:/etc/letsencrypt
+      - ./tailscale:/var/lib/tailscale
+```
 
-### 5. 進 NPM 建 Proxy Host(自動 tailnet 轉發)
+Volumes (all required):
 
-第一次登入 `http://<zeabur-domain>:81`(預設 `admin@example.com` / `changeme`,強制改密碼)。
+| Mount path           | Purpose                                                                 |
+| -------------------- | ----------------------------------------------------------------------- |
+| `/data`              | NPM configuration                                                       |
+| `/etc/letsencrypt`   | Let's Encrypt certificates                                              |
+| `/var/lib/tailscale` | **Tailscale state. Without it the node re-registers on every restart.** |
+
+Ports: `80` (HTTP), `81` (NPM admin UI), `443` (HTTPS).
+
+### 4. Environment variables
+
+| Variable        | Required | Description                                                                               |
+| --------------- | -------- | ----------------------------------------------------------------------------------------- |
+| `TS_AUTHKEY`    | ✅       | Auth key generated above. Keep it in a secret / `.env` file.                              |
+| `TS_HOSTNAME`   |          | Node name shown in the tailnet. Default `npm-tailscale`.                                  |
+| `TS_ACCEPT_DNS` |          | Set `true` to use MagicDNS names. Default `false`.                                        |
+| `TS_SOCKS_PORT` |          | tailscaled SOCKS5 listen port. Default `1055`.                                            |
+| `TS_FORWARDS`   |          | Optional manual forwards for testing, e.g. `18581:100.64.1.5:8581;15000:100.64.1.5:5000`. |
+
+> A manual mapping table is **not needed**. Just enter the tailnet IP + port when creating a Proxy Host in the NPM UI; forwarding is detected and created automatically.
+
+### 5. Create a Proxy Host in NPM (automatic tailnet forwarding)
+
+Open `http://<host-ip>:81` on first run (default `admin@example.com` / `changeme`; you are forced to change it).
 
 New Proxy Host:
 
-- **Domain Names**:`homebridge.yourdomain.com`
-- **Scheme**:`http`
-- **Forward Hostname / IP**:直接填 tailnet IP,例如 `100.64.1.5`(或 `nas.你的-tailnet.ts.net`,需要設 `TS_ACCEPT_DNS=true`)
-- **Forward Port**:目標服務 port,例如 `8581`
-- 建議勾 **Websockets Support**、**Block Common Exploits**
+- **Domain Names**: `homebridge.yourdomain.com`
+- **Scheme**: `http`
+- **Forward Hostname / IP**: the tailnet IP, e.g. `100.64.1.5` (or `nas.your-tailnet.ts.net`, requires `TS_ACCEPT_DNS=true`)
+- **Forward Port**: the target service port, e.g. `8581`
+- Recommended: enable **Websockets Support** and **Block Common Exploits**
 
-按存檔後幾秒內,容器內背景的 **autoforward** 會:
+A few seconds after saving, the background **autoforward** process will:
 
-1. 偵測到你新增的設定含 tailnet 目標
-2. 為 `100.64.1.5:8581` 分配一個 local port(例如 `27183`,基於 hash,同目標永遠同 port)
-3. 啟動 `socat 127.0.0.1:27183 → 100.64.1.5:8581`(走 SOCKS5)
-4. 改寫 NPM 產生的 nginx conf,把 upstream 換成 `127.0.0.1:27183`
-5. `nginx -s reload`
+1. Detect the new config with a tailnet target
+2. Allocate a local port for `100.64.1.5:8581` (e.g. `27183`, hash-based, the same target always gets the same port)
+3. Start `socat 127.0.0.1:27183 → 100.64.1.5:8581` (through SOCKS5)
+4. Rewrite the nginx conf generated by NPM so the upstream becomes `127.0.0.1:27183`
+5. Run `nginx -s reload`
 
-**你只需要在 UI 操作,其他全自動。** 刪掉 Proxy Host 也會自動停對應的 socat。
+**You only work in the UI; everything else is automatic.** Deleting a Proxy Host also stops its socat process.
 
-SSL 分頁可直接 Request a new SSL Certificate(Let's Encrypt)。
+The SSL tab can request a new Let's Encrypt certificate as usual.
 
 ---
 
-## 驗證步驟
+## Verification
 
-Zeabur → 該 service → **Terminal**,依序執行:
+Open a shell in the container (`docker exec -it npm-tailscale bash`) and run:
 
 ```sh
-# 1. tailnet 上線且看得到目標
+# 1. Tailnet is online and the target is visible
 tailscale --socket=/tmp/tailscaled.sock status
 
-# 2. userspace 網路能到目標
+# 2. Userspace networking can reach the target
 tailscale --socket=/tmp/tailscaled.sock ping 100.64.1.5
 
-# 3. 直接測 SOCKS5 是否能建立 TCP
+# 3. SOCKS5 can open a TCP connection
 curl -v --socks5-hostname localhost:1055 http://100.64.1.5:8581
 
-# 4. 看 autoforward 目前管理的對照
+# 4. Current autoforward mappings
 cat /var/lib/tailscale/autoforward.state
-# 例:100.64.1.5:8581 27183 42
+# e.g. 100.64.1.5:8581 27183 42
 
-# 5. 測 autoforward 分配的本地 port(NPM 實際會連的)
+# 5. Test the local port allocated by autoforward (what NPM actually connects to)
 curl -v http://127.0.0.1:27183
 ```
 
-**第 5 步通,NPM 就一定通。**
+**If step 5 works, NPM works.**
 
 ---
 
-## 疑難排解
+## Troubleshooting
 
-| 症狀                          | 原因 / 解法                                                                                                             |
-| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| Tailscale admin 一直冒新節點  | `/var/lib/tailscale` volume 沒掛,state 沒持久化                                                                         |
-| NPM 502 Bad Gateway           | 進 container 跑上面「驗證步驟 4」,不通就往前推                                                                          |
-| 步驟 2 通但 3 不通            | Tailscale ACL 沒放行,或 NAS 上服務只綁 `127.0.0.1` / LAN 介面                                                           |
-| 步驟 3 通但 5 不通            | autoforward 沒偵測到 conf,看容器 log `[autoforward]` 訊息;確認 NPM 的 Forward Hostname 是 `100.x` 開頭或 `.ts.net` 結尾 |
-| NPM UI 顯示的 hostname 被改掉 | 不會 —— autoforward 只改 `/data/nginx/proxy_host/*.conf`,不動 NPM 資料庫,UI 仍顯示你原本填的 tailnet IP                 |
-| 節點過陣子自動消失            | authkey 是 ephemeral,重產一把非 ephemeral 的                                                                            |
-| 想用 MagicDNS 名稱            | 設 `TS_ACCEPT_DNS=true`,NPM 內直接填 `nas.你的-tailnet.ts.net`                                                          |
-
----
-
-## 安全提醒
-
-- **`TS_AUTHKEY` 不要寫在 repo 裡**,用 Zeabur 環境變數 / secret
-- 一旦外洩立刻到 Tailscale admin 撤銷
-- NPM 後台預設密碼務必立即修改
-- Port `81`(NPM 後台)建議只在需要時暴露,或改成僅透過 tailnet 存取
+| Symptom                                     | Cause / Fix                                                                                                                                                           |
+| ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| New nodes keep appearing in Tailscale admin | `/var/lib/tailscale` volume is not mounted, state is not persisted                                                                                                    |
+| NPM returns 502 Bad Gateway                 | Run the verification steps above, working backwards from step 4                                                                                                       |
+| Step 2 works but 3 fails                    | Tailscale ACL blocks the traffic, or the target service only binds to `127.0.0.1` / a LAN interface                                                                   |
+| Step 3 works but 5 fails                    | autoforward did not detect the conf. Check the container log for `[autoforward]` messages; make sure NPM's Forward Hostname starts with `100.` or ends with `.ts.net` |
+| Hostname in the NPM UI gets changed         | It does not. autoforward only edits `/data/nginx/proxy_host/*.conf`, never the NPM database; the UI still shows the tailnet IP you entered                            |
+| Node disappears after a while               | The auth key is ephemeral. Generate a non-ephemeral one                                                                                                               |
+| Want to use MagicDNS names                  | Set `TS_ACCEPT_DNS=true` and enter `nas.your-tailnet.ts.net` in NPM                                                                                                   |
 
 ---
 
-## 授權
+## Security notes
 
-MIT
+- **Never commit `TS_AUTHKEY`** to the repo. Use environment variables / secrets / an untracked `.env` file.
+- If it leaks, revoke it immediately in Tailscale admin.
+- Change the default NPM admin password immediately.
+- Expose port `81` (NPM admin) only when needed, or restrict it to tailnet access.
+
+---
+
+## License
+
+The files in this repository are released under the [MIT License](LICENSE).
+
+### Third-party software
+
+This repository contains **only scripts and a Dockerfile**. It does not include any third-party binaries. They are downloaded when you build the image and remain under their own licenses:
+
+| Software                                                                                                                 | Source                                           | License                                                                                             |
+| ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
+| [Nginx Proxy Manager](https://github.com/NginxProxyManager/nginx-proxy-manager) (`jc21/nginx-proxy-manager`, base image) | Docker Hub                                       | MIT; the image also bundles nginx, certbot, Node.js, s6-overlay and others under their own licenses |
+| [Tailscale](https://github.com/tailscale/tailscale)                                                                      | Installed via `https://tailscale.com/install.sh` | BSD-3-Clause                                                                                        |
+| [socat](http://www.dest-unreach.org/socat/)                                                                              | Debian package                                   | GPL-2.0                                                                                             |
+| iptables, curl, ca-certificates                                                                                          | Debian packages                                  | GPL-2.0+ / curl license / MPL-2.0 and others                                                        |
+
+If you publish a built image (e.g. to Docker Hub or GHCR), you are responsible for complying with the licenses of all components inside it, including source-offer obligations for GPL software.
+
+This project is not affiliated with or endorsed by Nginx Proxy Manager, Tailscale Inc. or the nginx project. "Tailscale" is a registered trademark of Tailscale Inc.
