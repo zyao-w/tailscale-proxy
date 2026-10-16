@@ -28,6 +28,12 @@ touch "${STATE_FILE}"
 
 log() { echo "[autoforward] $*"; }
 
+# Guarantee the state file exists before any read/write (it may be removed
+# out from under us, or lost during a .tmp rename race).
+ensure_state_file() {
+  [ -f "${STATE_FILE}" ] || : > "${STATE_FILE}"
+}
+
 # ---------------------------------------------------------------------------
 # Serialize all state-file mutations so concurrent/looped writes never clobber.
 # ---------------------------------------------------------------------------
@@ -86,6 +92,7 @@ base_port_for_key() {
 # ---------------------------------------------------------------------------
 alloc_port() {
   local key="$1"
+  ensure_state_file
 
   # Reuse existing assignment if present.
   local existing
@@ -138,6 +145,7 @@ ensure_socat() {
   local lport="$2"
   local host="${key%:*}"
   local rport="${key##*:}"
+  ensure_state_file
 
   # Already recorded and alive on the right port?
   local rec_lport rec_pid
@@ -191,6 +199,7 @@ ensure_socat() {
 
 cleanup_stale() {
   local active_keys="$1"    # newline-separated list of host:port still in use
+  ensure_state_file
   _cleanup_impl() {
     local tmp="${STATE_FILE}.tmp"
     : > "${tmp}"
@@ -226,6 +235,7 @@ last_checksum=""
 
 process_configs() {
   [ -d "${CONF_DIR}" ] || return 0
+  ensure_state_file
 
   local checksum
   checksum=$(find "${CONF_DIR}" -type f -name '*.conf' -exec md5sum {} + 2>/dev/null | md5sum | awk '{print $1}')
@@ -252,10 +262,14 @@ process_configs() {
       fi
 
       # Keep the conf's $server/$port in sync with the (reused) port.
-      if ! grep -qE "set\s+\$server\s+\"127\.0\.0\.1\"" "${conf}" \
-         || ! grep -qE "set\s+\$port\s+${lport}\b" "${conf}"; then
-        sed -i -E "s#(set\s+\\\$server\s+)\"[^\"]+\"#\\1\"127.0.0.1\"#" "${conf}"
-        sed -i -E "s#(set\s+\\\$port\s+)[0-9]+#\\1${lport}#" "${conf}"
+      # NOTE: '$' must be escaped in grep ERE, otherwise it means end-of-line
+      # and the check never matches -> file rewritten every poll (ping-pong).
+      local server_ok=0 port_ok=0
+      grep -qE 'set[[:space:]]+\$server[[:space:]]+"127\.0\.0\.1"' "${conf}" && server_ok=1
+      grep -qE "set[[:space:]]+\\\$port[[:space:]]+${lport}([[:space:]]|;|\$)" "${conf}" && port_ok=1
+      if [ "${server_ok}" = "0" ] || [ "${port_ok}" = "0" ]; then
+        sed -i -E "s#(set[[:space:]]+\\\$server[[:space:]]+)\"[^\"]+\"#\\1\"127.0.0.1\"#" "${conf}"
+        sed -i -E "s#(set[[:space:]]+\\\$port[[:space:]]+)[0-9]+#\\1${lport}#" "${conf}"
         set_marker "${conf}" "${orig_key}" "${lport}"
         changed_any=1
         log "resynced ${conf##*/} -> 127.0.0.1:${lport} (tailnet ${orig_key})"
